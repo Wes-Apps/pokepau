@@ -13,6 +13,8 @@ function clean(value = '') {
     .replace(/&amp;/gi, '&')
     .replace(/&#39;|&apos;/gi, "'")
     .replace(/&quot;/gi, '"')
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -41,7 +43,7 @@ function normalize(row, i) {
   const sta = num(row.HP ?? row.hp ?? row.Stamina ?? row.stamina);
   return {
     id: String(row.ID || row.id || `${number || name}-${c.lat}-${c.lon}-${i}`),
-    name: name.replace(/#\d+\s*$/, '').trim(), number,
+    name: name.replace(/#\d+\s*$/, '').replace(/\s*\([^)]*\)\s*/g, ' ').replace(/[♂♀]/g, '').replace(/\s+/g, ' ').trim(), number,
     lat: c.lat, lon: c.lon,
     country: clean(row.Country || row.country || row.country_name || ''), city: clean(row.City || row.city || ''),
     atk, def, sta,
@@ -59,49 +61,29 @@ export async function onRequestOptions() {
   return new Response(null, { status: 204, headers: cors });
 }
 
-async function fetchMoonaniIV(iv, start, length) {
-  const body = new URLSearchParams({ iv: String(iv), pvp: '0', pokemons: '', start: String(start), length: String(length), draw: '1' });
-  const upstream = await fetch('https://moonani.com/PokeList/ajax.php?page=pokemon&action=load', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-      'Accept': 'application/json, text/plain, */*',
-      'Referer': 'https://moonani.com/PokeList/index.php',
-      'User-Agent': 'Mozilla/5.0 (compatible; PokePau/1.1; sightings feed client)'
-    },
-    body,
-    signal: AbortSignal.timeout(18000)
-  });
-  if (!upstream.ok) throw new Error(`Moonani IV ${iv}: HTTP ${upstream.status}`);
-  const payload = await upstream.json();
-  return Array.isArray(payload.data) ? payload.data : Array.isArray(payload) ? payload : [];
-}
-
 export async function onRequestGet({ request }) {
   const url = new URL(request.url);
   const start = Math.max(0, Math.min(5000, Number(url.searchParams.get('start') || 0)));
   const length = Math.max(10, Math.min(230, Number(url.searchParams.get('length') || 230)));
+  const iv = url.searchParams.get('iv') || '0';
+  const body = new URLSearchParams({ iv, pvp: '0', pokemons: '', start: String(start), length: String(length), draw: '1' });
   try {
-    // Moonani's documented community examples use iv=100 for hundos and iv=0 for nundos.
-    // Query both explicitly; do not label this as every wild spawn in the world.
-    const [hundos, nundos] = await Promise.all([
-      fetchMoonaniIV(100, start, length),
-      fetchMoonaniIV(0, start, length)
-    ]);
-    const rows = [...hundos, ...nundos];
-    const seen = new Set();
-    const sightings = rows.map(normalize).filter(Boolean).filter(item => {
-      const key = `${item.number || item.name}|${item.lat}|${item.lon}|${item.start || ''}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
+    const upstream = await fetch('https://moonani.com/PokeList/ajax.php?page=pokemon&action=load', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'Accept': 'application/json, text/plain, */*',
+        'Referer': 'https://moonani.com/PokeList/index.php',
+        'User-Agent': 'PokePau/1.0 (community sightings client)'
+      },
+      body,
+      signal: AbortSignal.timeout(18000)
     });
-    return new Response(JSON.stringify({
-      ok: true,
-      source: 'Moonani PokeList (IV 100% e IV 0%)',
-      scope: 'Este feed entrega resultados filtrados por IV 100% y 0%; no representa todas las apariciones salvajes.',
-      fetchedAt: new Date().toISOString(), total: sightings.length, start, length, sightings
-    }), { headers: cors });
+    if (!upstream.ok) throw new Error(`Proveedor respondió HTTP ${upstream.status}`);
+    const payload = await upstream.json();
+    const raw = Array.isArray(payload.data) ? payload.data : Array.isArray(payload) ? payload : [];
+    const sightings = raw.map(normalize).filter(Boolean);
+    return new Response(JSON.stringify({ ok: true, source: 'Moonani PokeList', fetchedAt: new Date().toISOString(), total: sightings.length, start, length, sightings }), { headers: cors });
   } catch (error) {
     return new Response(JSON.stringify({ ok: false, source: 'Moonani PokeList', error: 'No se pudo consultar el feed de apariciones. El proveedor puede estar temporalmente caído o limitar las solicitudes.', detail: String(error?.message || error), sightings: [] }), { status: 502, headers: cors });
   }
