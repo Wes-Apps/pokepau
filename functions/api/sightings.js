@@ -45,14 +45,14 @@ function normalize(row, i) {
     id: String(row.ID || row.id || `${number || name}-${c.lat}-${c.lon}-${i}`),
     name: name.replace(/#\d+\s*$/, '').replace(/\s*\([^)]*\)\s*/g, ' ').replace(/[♂♀]/g, '').replace(/\s+/g, ' ').trim(), number,
     lat: c.lat, lon: c.lon,
-    country: clean(row.Country || row.country || row.country_name || ''), city: clean(row.City || row.city || ''),
+    country: clean(row.Country || row.country || row.country_name || ''), countryCode: clean(row.CountryCode || row.country_code || ''), city: clean(row.City || row.city || ''),
     atk, def, sta,
     iv: num(row.IV || row.iv || row['IV%']),
     cp: num(row.CP || row.cp), level: num(row.Level || row.level),
     shinyEligible: yes(row.Shiny || row.shiny || row.shiny_eligible),
     shiny: false,
-    start: clean(row['Start Time'] || row.start_time || ''),
-    expires: clean(row['End Time'] || row.end_time || row.despawn_time || ''),
+    start: clean(row['Start Time'] || row.Start || row.start_time || row.start || row.spawn_time || ''),
+    expires: clean(row['End Time'] || row.End || row.end_time || row.despawn_time || row.expiration || ''),
     source: 'Moonani PokeList'
   };
 }
@@ -65,8 +65,11 @@ export async function onRequestGet({ request }) {
   const url = new URL(request.url);
   const start = Math.max(0, Math.min(5000, Number(url.searchParams.get('start') || 0)));
   const length = Math.max(10, Math.min(230, Number(url.searchParams.get('length') || 230)));
-  const iv = url.searchParams.get('iv') || '0';
-  const body = new URLSearchParams({ iv, pvp: '0', pokemons: '', start: String(start), length: String(length), draw: '1' });
+  const mode = url.searchParams.get('mode') || 'any';
+  // Moonani maneja las categorías desde el propio feed; no se simulan filtros en el navegador.
+  const iv = mode === 'hundo' ? '100' : '0';
+  const pvp = mode === 'pvp' ? '1' : '0';
+  const body = new URLSearchParams({ iv, pvp, pokemons: '', start: String(start), length: String(length), draw: '1' });
   try {
     const upstream = await fetch('https://moonani.com/PokeList/ajax.php?page=pokemon&action=load', {
       method: 'POST',
@@ -83,7 +86,9 @@ export async function onRequestGet({ request }) {
     const payload = await upstream.json();
     const raw = Array.isArray(payload.data) ? payload.data : Array.isArray(payload) ? payload : [];
     const sightings = raw.map(normalize).filter(Boolean);
-    return new Response(JSON.stringify({ ok: true, source: 'Moonani PokeList', fetchedAt: new Date().toISOString(), total: sightings.length, start, length, sightings }), { headers: cors });
+    // Aplicar IV 0% en servidor cuando el feed entregue los IV individuales; para PvP se respeta la categoría del proveedor.
+    const filtered = mode === 'nundo' ? sightings.filter(x => x.atk === 0 && x.def === 0 && x.sta === 0) : mode === 'hundo' ? sightings.filter(x => x.atk === 15 && x.def === 15 && x.sta === 15) : sightings;
+    return new Response(JSON.stringify({ ok: true, mode, source: 'Moonani PokeList', fetchedAt: new Date().toISOString(), total: filtered.length, start, length, sightings: filtered }), { headers: cors });
   } catch (error) {
     return new Response(JSON.stringify({ ok: false, source: 'Moonani PokeList', error: 'No se pudo consultar el feed de apariciones. El proveedor puede estar temporalmente caído o limitar las solicitudes.', detail: String(error?.message || error), sightings: [] }), { status: 502, headers: cors });
   }
